@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core.platform import DefensePlatform
+from core.platform import DefensePlatform, normalize_event
 from core.telemetry import parse_telemetry
 
 platform = DefensePlatform()
@@ -106,6 +107,54 @@ async def ingest_raw_telemetry(request: RawTelemetryRequest) -> dict[str, Any]:
         detections = [d for d in (incident or {}).get("detections", []) if d["event_id"] == event["event_id"]]
         results.append({"event_id": event["event_id"], "source": event["source"], "source_detection": event.get("source_detection"), "event_type": event["event_type"], "detections": detections, "incident_id": (incident or {}).get("incident_id")})
     return {"accepted": len(results), "results": results, "incidents": list({r["incident_id"] for r in results if r["incident_id"]}), "pipeline": ["parse", "source classification", "normalization", "rule and anomaly detection", "correlation", "investigation", "risk and graph"]}
+
+
+@app.post("/api/v1/telemetry/analyze")
+async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingResponse:
+    """Stream actual pipeline results one completed analysis stage at a time."""
+    try:
+        records = parse_telemetry(request.raw_data)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not records:
+        raise HTTPException(status_code=422, detail="No telemetry records were found")
+    if len(records) > 500:
+        raise HTTPException(status_code=413, detail="A batch can contain at most 500 telemetry records")
+
+    def message(stage: str, title: str, details: dict[str, Any]) -> bytes:
+        return (json.dumps({"stage": stage, "title": title, "details": details}, ensure_ascii=True, default=str) + "\n").encode()
+
+    async def run_stages():
+        sources: dict[str, int] = {}
+        for record in records:
+            sources[record["source"]] = sources.get(record["source"], 0) + 1
+        yield message("parse", "Parse raw input and identify sources", {"records_found": len(records), "source_counts": sources, "format": "JSON / NDJSON / key-value logs", "sample": [{"source": r["source"], "source_detection": r.get("source_detection"), "event_type": r["event_type"]} for r in records[:8]]})
+
+        normalized = [normalize_event(record) for record in records]
+        yield message("normalize", "Normalize records into a common event schema", {"normalized": len(normalized), "fields": ["timestamp", "source", "user", "host", "event_type", "process", "IPs", "raw_log"], "sample": [{"event_id": e["event_id"], "timestamp": e["timestamp"], "source": e["source"], "user": e["user"], "host": e["host"], "event_type": e["event_type"], "src_ip": e.get("src_ip"), "dst_ip": e.get("dst_ip")} for e in normalized[:8]]})
+
+        detections = [platform.detect_normalized(event) for event in normalized]
+        yield message("detect", "Run detection rules and anomaly scoring", {"events_checked": len(normalized), "matches": [{"event_id": event["event_id"], "source": event["source"], "matches": [{"title": d["title"], "rule": d["rule"], "evidence": d["evidence"], "techniques": d["techniques"]} for d in hits]} for event, hits in zip(normalized, detections)], "ml_baseline_samples": len(platform.ml.rows), "note": "The Isolation Forest begins scoring after its minimum baseline is available."})
+
+        correlations = []
+        incidents: dict[str, dict[str, Any]] = {}
+        for event, hits in zip(normalized, detections):
+            incident = platform.correlate_detected(event, hits)
+            if incident:
+                incidents[incident["incident_id"]] = incident
+            correlations.append({"event_id": event["event_id"], "detection_count": len(hits), "incident_id": incident["incident_id"] if incident else None})
+        yield message("correlate", "Correlate events and assemble incident timelines", {"events_stored": len(normalized), "event_links": correlations, "incidents_updated": len(incidents), "incidents": [{"incident_id": i["incident_id"], "event_count": len(i["events"]), "detection_count": len(i["detections"])} for i in incidents.values()]})
+
+        for incident in incidents.values():
+            platform.investigate_incident(incident)
+        yield message("investigate", "Build evidence-cited investigation hypotheses", {"investigations": [{"incident_id": i["incident_id"], "status": i["investigation"]["status"], "hypothesis": i["hypothesis"], "reasoning": i["investigation"].get("reasoning"), "event_ids": i["investigation"].get("event_ids", []), "engine": i["investigation"].get("engine")} for i in incidents.values()], "note": "When no LLM key is configured, the evidence-grounded local investigator is used."})
+
+        for incident in incidents.values():
+            platform.prioritize_incident(incident)
+        yield message("prioritize", "Map techniques, score risk, and build attack graphs", {"incidents": [{"incident_id": i["incident_id"], "severity": i["severity"], "risk_score": i["risk_score"], "risk_factors": i["risk_factors"], "mitre_techniques": i["mitre_techniques"], "graph_nodes": len(i["attack_graph"]["nodes"]), "graph_edges": len(i["attack_graph"]["edges"]), "recommended_actions": i["recommended_actions"]} for i in incidents.values()]})
+        yield message("complete", "Analysis complete", {"records_processed": len(normalized), "incident_ids": list(incidents), "response_executed": False, "response_note": "No response action was taken. Any simulated action requires analyst approval."})
+
+    return StreamingResponse(run_stages(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/v1/events")

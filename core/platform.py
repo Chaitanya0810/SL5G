@@ -94,13 +94,26 @@ class DefensePlatform:
 
     def ingest(self, raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
         event = normalize_event(raw)
-        # Score only against previous observations; the current event enters the baseline after scoring.
+        detections = self.detect_normalized(event)
+        incident = self.correlate_detected(event, detections)
+        if incident:
+            self.investigate_incident(incident)
+            self.prioritize_incident(incident)
+        return event, incident
+
+    def detect_normalized(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """Score a normalized event, then learn it for future anomaly comparisons."""
         anomaly = self.ml.score(event)
-        self.events.append(event)
         detections = inspect_event(event)
         if anomaly and anomaly["score"] >= .68:
             detections.append({"rule": "ml_anomaly", "title": "Behavioral anomaly", "evidence": anomaly["evidence"], "techniques": [], "tactics": [], "confidence": anomaly["score"], "anomaly_score": anomaly["score"], "model": anomaly["model"]})
         self.ml.learn(event)
+        event["anomaly"] = anomaly
+        return detections
+
+    def correlate_detected(self, event: dict[str, Any], detections: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Store one processed event and attach its detections to a related incident."""
+        self.events.append(event)
         self.audit.append({"timestamp": utc_now(), "action": "event_ingested", "event_id": event["event_id"]})
         incident = None
         if detections:
@@ -118,12 +131,17 @@ class DefensePlatform:
             for hit in detections:
                 if all(d["rule"] != hit["rule"] or d["event_id"] != event["event_id"] for d in incident["detections"]):
                     incident["detections"].append({**hit, "event_id": event["event_id"]})
-            self._summarize(incident)
             self.audit.append({"timestamp": utc_now(), "action": "incident_correlated", "incident_id": incident["incident_id"]})
-        event["anomaly"] = anomaly
-        return event, incident
+        return incident
 
-    def _summarize(self, incident: dict[str, Any]) -> None:
+    def investigate_incident(self, incident: dict[str, Any]) -> None:
+        investigation = investigate(incident["events"], incident["detections"])
+        incident["hypothesis"] = investigation["hypothesis"]
+        incident["investigation"] = investigation
+        incident["confidence"] = round(max((d.get("confidence", .6) for d in incident["detections"]), default=.5), 2)
+        incident["status"] = "investigating" if investigation["status"] == "INSUFFICIENT EVIDENCE" else "open"
+
+    def prioritize_incident(self, incident: dict[str, Any]) -> None:
         detections, events = incident["detections"], incident["events"]
         techniques = sorted({t for d in detections for t in d["techniques"]})
         rule_score = min(1.0, .25 + .18 * len({d["rule"] for d in detections}) + .08 * max(0, len(events) - 1))
@@ -131,18 +149,19 @@ class DefensePlatform:
         evidence_confidence = max((d.get("confidence", .6) for d in detections), default=.5)
         criticality = max((self.asset_criticality.get(str(e.get("asset_criticality", e.get("asset_type", "workstation"))).lower(), .5) for e in events), default=.5)
         risk = min(1.0, rule_score * .45 + evidence_confidence * .3 + criticality * .15 + (max(ml_scores, default=0) * .1))
-        investigation = investigate(events, detections)
         incident.update({
             "risk_score": round(risk, 3),
             "risk_factors": {"rule_and_correlation": round(rule_score, 3), "evidence_confidence": round(evidence_confidence, 3), "asset_criticality": round(criticality, 3), "anomaly_score": round(max(ml_scores, default=0), 3)},
             "severity": "critical" if risk >= .85 else "high" if risk >= .68 else "medium" if risk >= .45 else "low",
             "confidence": round(evidence_confidence, 2), "mitre_techniques": techniques,
             "mitre_tactics": sorted({t for d in detections for t in d["tactics"]}),
-            "hypothesis": investigation["hypothesis"], "investigation": investigation,
             "recommended_actions": ["Review cited events and validate affected assets", "Search related user, host, and network telemetry", "Request analyst approval before any simulated containment"],
             "attack_graph": self._graph(events, detections),
         })
-        incident["status"] = "investigating" if investigation["status"] == "INSUFFICIENT EVIDENCE" else "open"
+
+    def _summarize(self, incident: dict[str, Any]) -> None:
+        self.investigate_incident(incident)
+        self.prioritize_incident(incident)
 
     @staticmethod
     def _graph(events: list[dict[str, Any]], detections: list[dict[str, Any]]) -> dict[str, Any]:
