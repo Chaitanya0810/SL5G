@@ -46,12 +46,14 @@ def _source(event: dict[str, Any], flat: dict[str, Any], text: str) -> tuple[str
     low = text.lower()
     if keys.intersection({"eventname", "cloudtrail", "useridentity", "cloudresource", "awsregion", "principalid"}) or any(x in low for x in ("cloudtrail", "aws iam", "azure activity", "gcp audit")):
         return "cloud", "cloud audit fields or provider markers"
-    if keys.intersection({"srcip", "sourceip", "dstip", "destinationip", "sourceport", "destinationport", "bytesout", "bytesin", "protocol"}) or re.search(r"\b(?:src|source)[_-]?ip\s*[=:]", low):
-        return "network", "network flow fields"
-    if keys.intersection({"process", "processname", "image", "commandline", "parentimage", "parentprocess", "registrypath"}) or any(x in low for x in ("powershell", "sysmon", "process create", "process_execution", "lsass")):
+    if keys.intersection({"process", "processname", "image", "commandline", "parentimage", "parentprocess", "registrypath"}):
         return "endpoint", "process or endpoint activity fields"
     if keys.intersection({"authresult", "authenticationresult", "clientipaddress", "logontype", "failurecode"}) or any(x in low for x in ("authentication", "login", "logon", "failed sign-in", "failed login")):
         return "identity", "authentication fields or login markers"
+    if keys.intersection({"dstip", "destinationip", "destinationaddress", "sourceport", "destinationport", "bytesout", "bytesin", "protocol"}) or (keys.intersection({"srcip", "sourceip"}) and keys.intersection({"dstip", "destinationip"})) or re.search(r"\b(?:src|source)[_-]?ip\s*[=:].+\b(?:dst|dest|destination)[_-]?ip\s*[=:]", low) or "network_flow" in low:
+        return "network", "network flow fields"
+    if any(x in low for x in ("powershell", "sysmon", "process create", "process_execution", "lsass")):
+        return "endpoint", "process or endpoint activity markers"
     return "unknown", "source could not be confidently inferred"
 
 
