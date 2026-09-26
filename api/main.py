@@ -17,6 +17,13 @@ from core.telemetry import parse_telemetry
 platform = DefensePlatform()
 
 
+def llm_configuration() -> dict[str, Any]:
+    provider = os.getenv("CYBERSENTINEL_LLM_PROVIDER", "openai").strip().lower()
+    if provider == "ollama":
+        return {"configured": True, "provider": "Ollama (local)", "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"), "used_for": "local investigation summaries for incidents with detections"}
+    return {"configured": bool(os.getenv("OPENAI_API_KEY")), "provider": provider, "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "used_for": "investigation summaries for incidents with detections"}
+
+
 class EventRequest(BaseModel):
     model_config = {"extra": "allow"}
     timestamp: str | None = None
@@ -160,7 +167,7 @@ async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingRespon
             "processing": {
                 "rules": {"method": "Explainable per-event behavior rules", "status": "run during detection stage"},
                 "ml": {"model": "IsolationForest", "minimum_baseline": platform.ml.min_samples, "baseline_observations": baseline_before_batch, "ready_before_batch": baseline_before_batch >= platform.ml.min_samples},
-                "llm": {"configured": bool(os.getenv("OPENAI_API_KEY")), "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "used_for": "investigation summaries for incidents with detections"},
+                "llm": llm_configuration(),
             },
         })
 
@@ -182,8 +189,8 @@ async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingRespon
         for incident in incidents.values():
             platform.investigate_incident(incident)
         investigation_engines = [i["investigation"].get("engine", "unknown") for i in incidents.values()]
-        llm_configured = bool(os.getenv("OPENAI_API_KEY"))
-        yield message("investigate", "Build evidence-cited investigation hypotheses", {"investigations": [{"incident_id": i["incident_id"], "status": i["investigation"]["status"], "hypothesis": i["hypothesis"], "reasoning": i["investigation"].get("reasoning"), "event_ids": i["investigation"].get("event_ids", []), "engine": i["investigation"].get("engine"), "llm_failure": i["investigation"].get("llm_failure")} for i in incidents.values()], "llm": {"configured": llm_configured, "incident_summaries": len(incidents), "configured_llm_results": sum(engine.startswith("configured LLM") for engine in investigation_engines), "local_fallbacks": sum("local investigator" in engine for engine in investigation_engines), "engines": investigation_engines, "failures": [i["investigation"]["llm_failure"] for i in incidents.values() if i["investigation"].get("llm_failure")]}, "note": "The optional LLM is called only for incidents with detections. Without a key, or if the provider fails, the evidence-grounded local investigator is used."})
+        llm_configured = llm_configuration()["configured"]
+        yield message("investigate", "Build evidence-cited investigation hypotheses", {"investigations": [{"incident_id": i["incident_id"], "status": i["investigation"]["status"], "hypothesis": i["hypothesis"], "reasoning": i["investigation"].get("reasoning"), "event_ids": i["investigation"].get("event_ids", []), "engine": i["investigation"].get("engine"), "llm_failure": i["investigation"].get("llm_failure")} for i in incidents.values()], "llm": {"configured": llm_configured, "provider": llm_configuration()["provider"], "model": llm_configuration()["model"], "incident_summaries": len(incidents), "configured_llm_results": sum(engine.startswith(("configured LLM", "local Ollama")) for engine in investigation_engines), "local_fallbacks": sum("local investigator" in engine for engine in investigation_engines), "engines": investigation_engines, "failures": [i["investigation"]["llm_failure"] for i in incidents.values() if i["investigation"].get("llm_failure")]}, "note": "The optional LLM is called only for incidents with detections. Without a configured provider, or if the provider fails, the evidence-grounded local investigator is used."})
 
         for incident in incidents.values():
             platform.prioritize_incident(incident)
