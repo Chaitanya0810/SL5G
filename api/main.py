@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -137,10 +138,37 @@ async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingRespon
         yield message("parse", "Parse raw input and identify sources", {"records_found": len(records), "source_counts": sources, "format": "JSON / NDJSON / key-value logs", "sample": [{"source": r["source"], "source_detection": r.get("source_detection"), "event_type": r["event_type"]} for r in records[:8]]})
 
         normalized = [normalize_event(record) for record in records]
-        yield message("normalize", "Normalize records into a common event schema", {"normalized": len(normalized), "fields": ["timestamp", "source", "user", "host", "event_type", "process", "IPs", "raw_log"], "sample": [{"event_id": e["event_id"], "timestamp": e["timestamp"], "source": e["source"], "user": e["user"], "host": e["host"], "event_type": e["event_type"], "src_ip": e.get("src_ip"), "dst_ip": e.get("dst_ip")} for e in normalized[:8]]})
+        baseline_before_batch = len(platform.ml.rows)
+        normalized_rows = [{
+            "number": index + 1,
+            "event_time_seconds": event.get("event_time_seconds"),
+            "source": event["source"],
+            "user": event["user"],
+            "host": event["host"],
+            "destination_user": event.get("destination_user", ""),
+            "destination_host": event.get("destination_host", ""),
+            "event_type": event["event_type"],
+            "auth_type": event.get("auth_type", ""),
+            "logon_type": event.get("logon_type", ""),
+            "auth_orientation": event.get("auth_orientation", ""),
+            "auth_result": event.get("auth_result", ""),
+        } for index, event in enumerate(normalized)]
+        yield message("normalize", "Normalize records into a common event schema", {
+            "normalized": len(normalized),
+            "fields": ["timestamp", "source", "user", "host", "destination_user", "destination_host", "event_type", "auth_result", "event_time_seconds"],
+            "records": normalized_rows,
+            "processing": {
+                "rules": {"method": "Explainable per-event behavior rules", "status": "run during detection stage"},
+                "ml": {"model": "IsolationForest", "minimum_baseline": platform.ml.min_samples, "baseline_observations": baseline_before_batch, "ready_before_batch": baseline_before_batch >= platform.ml.min_samples},
+                "llm": {"configured": bool(os.getenv("OPENAI_API_KEY")), "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "used_for": "investigation summaries for incidents with detections"},
+            },
+        })
 
         detections = [platform.detect_normalized(event) for event in normalized]
-        yield message("detect", "Run detection rules and anomaly scoring", {"events_checked": len(normalized), "matches": [{"event_id": event["event_id"], "source": event["source"], "matches": [{"title": d["title"], "rule": d["rule"], "evidence": d["evidence"], "techniques": d["techniques"]} for d in hits]} for event, hits in zip(normalized, detections)], "ml_baseline_samples": len(platform.ml.rows), "note": "The Isolation Forest begins scoring after its minimum baseline is available."})
+        ml_scored_events = sum(event.get("anomaly") is not None for event in normalized)
+        ml_anomalies = sum(any(hit.get("rule") == "ml_anomaly" for hit in hits) for hits in detections)
+        rule_matches = sum(hit.get("rule") != "ml_anomaly" for hits in detections for hit in hits)
+        yield message("detect", "Run detection rules and anomaly scoring", {"events_checked": len(normalized), "matches": [{"event_id": event["event_id"], "source": event["source"], "matches": [{"title": d["title"], "rule": d["rule"], "evidence": d["evidence"], "techniques": d["techniques"]} for d in hits]} for event, hits in zip(normalized, detections)], "rules": {"events_checked": len(normalized), "rule_matches": rule_matches}, "ml": {"model": "IsolationForest", "minimum_baseline": platform.ml.min_samples, "baseline_before_batch": baseline_before_batch, "baseline_after_batch": len(platform.ml.rows), "events_scored": ml_scored_events, "anomaly_findings": ml_anomalies}, "ml_baseline_samples": len(platform.ml.rows), "note": "The Isolation Forest starts scoring once the local baseline has at least 24 observations; it learns from this stream for future events."})
 
         correlations = []
         incidents: dict[str, dict[str, Any]] = {}
@@ -153,7 +181,9 @@ async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingRespon
 
         for incident in incidents.values():
             platform.investigate_incident(incident)
-        yield message("investigate", "Build evidence-cited investigation hypotheses", {"investigations": [{"incident_id": i["incident_id"], "status": i["investigation"]["status"], "hypothesis": i["hypothesis"], "reasoning": i["investigation"].get("reasoning"), "event_ids": i["investigation"].get("event_ids", []), "engine": i["investigation"].get("engine")} for i in incidents.values()], "note": "When no LLM key is configured, the evidence-grounded local investigator is used."})
+        investigation_engines = [i["investigation"].get("engine", "unknown") for i in incidents.values()]
+        llm_configured = bool(os.getenv("OPENAI_API_KEY"))
+        yield message("investigate", "Build evidence-cited investigation hypotheses", {"investigations": [{"incident_id": i["incident_id"], "status": i["investigation"]["status"], "hypothesis": i["hypothesis"], "reasoning": i["investigation"].get("reasoning"), "event_ids": i["investigation"].get("event_ids", []), "engine": i["investigation"].get("engine")} for i in incidents.values()], "llm": {"configured": llm_configured, "incident_summaries": len(incidents), "configured_llm_results": sum(engine.startswith("configured LLM") for engine in investigation_engines), "local_fallbacks": sum("local investigator" in engine for engine in investigation_engines), "engines": investigation_engines}, "note": "The optional LLM is called only for incidents with detections. Without a key, or if the provider fails, the evidence-grounded local investigator is used."})
 
         for incident in incidents.values():
             platform.prioritize_incident(incident)
