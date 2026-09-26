@@ -1,6 +1,7 @@
 """FastAPI interface for the simulated CyberSentinel defensive platform."""
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 import json
 import os
@@ -20,7 +21,7 @@ platform = DefensePlatform()
 def llm_configuration() -> dict[str, Any]:
     provider = os.getenv("CYBERSENTINEL_LLM_PROVIDER", "openai").strip().lower()
     if provider == "ollama":
-        return {"configured": True, "provider": "Ollama (local)", "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b"), "used_for": "local investigation summaries for incidents with detections"}
+        return {"configured": True, "provider": "Ollama (local)", "model": os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b"), "used_for": "local investigation summaries for incidents with detections"}
     return {"configured": bool(os.getenv("OPENAI_API_KEY")), "provider": provider, "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "used_for": "investigation summaries for incidents with detections"}
 
 
@@ -171,7 +172,13 @@ async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingRespon
             },
         })
 
-        detections = [platform.detect_normalized(event) for event in normalized]
+        detections = []
+        detection_batch_size = 25
+        for index, event in enumerate(normalized, start=1):
+            detections.append(platform.detect_normalized(event))
+            if index % detection_batch_size == 0 or index == len(normalized):
+                yield message("progress", "Scoring telemetry", {"stage": "detect", "completed": index, "total": len(normalized), "message": f"Checked {index:,} of {len(normalized):,} records with behavior rules and the anomaly model."})
+                await asyncio.sleep(0)
         ml_scored_events = sum(event.get("anomaly") is not None for event in normalized)
         ml_anomalies = sum(any(hit.get("rule") == "ml_anomaly" for hit in hits) for hits in detections)
         rule_matches = sum(hit.get("rule") != "ml_anomaly" for hits in detections for hit in hits)
@@ -179,15 +186,23 @@ async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingRespon
 
         correlations = []
         incidents: dict[str, dict[str, Any]] = {}
-        for event, hits in zip(normalized, detections):
+        for index, (event, hits) in enumerate(zip(normalized, detections), start=1):
             incident = platform.correlate_detected(event, hits)
             if incident:
                 incidents[incident["incident_id"]] = incident
             correlations.append({"event_id": event["event_id"], "detection_count": len(hits), "incident_id": incident["incident_id"] if incident else None})
+            if index % 50 == 0 or index == len(normalized):
+                yield message("progress", "Correlating activity", {"stage": "correlate", "completed": index, "total": len(normalized), "message": f"Linked {index:,} of {len(normalized):,} events into related timelines."})
+                await asyncio.sleep(0)
         yield message("correlate", "Correlate events and assemble incident timelines", {"events_stored": len(normalized), "event_links": correlations, "incidents_updated": len(incidents), "incidents": [{"incident_id": i["incident_id"], "event_count": len(i["events"]), "detection_count": len(i["detections"])} for i in incidents.values()]})
 
-        for incident in incidents.values():
-            platform.investigate_incident(incident)
+        for index, incident in enumerate(incidents.values(), start=1):
+            llm_settings = llm_configuration()
+            model_message = (f"Running {llm_settings['provider']} model {llm_settings['model']} on incident evidence. Local inference can take longer than rule checks."
+                             if llm_settings["configured"] else "Building an evidence-grounded summary from the local investigator.")
+            yield message("progress", "Investigating incident evidence", {"stage": "investigate", "completed": index - 1, "total": len(incidents), "message": model_message})
+            await asyncio.sleep(0)
+            await asyncio.to_thread(platform.investigate_incident, incident)
         investigation_engines = [i["investigation"].get("engine", "unknown") for i in incidents.values()]
         llm_configured = llm_configuration()["configured"]
         yield message("investigate", "Build evidence-cited investigation hypotheses", {"investigations": [{"incident_id": i["incident_id"], "status": i["investigation"]["status"], "hypothesis": i["hypothesis"], "reasoning": i["investigation"].get("reasoning"), "event_ids": i["investigation"].get("event_ids", []), "engine": i["investigation"].get("engine"), "llm_failure": i["investigation"].get("llm_failure")} for i in incidents.values()], "llm": {"configured": llm_configured, "provider": llm_configuration()["provider"], "model": llm_configuration()["model"], "incident_summaries": len(incidents), "configured_llm_results": sum(engine.startswith(("configured LLM", "local Ollama")) for engine in investigation_engines), "local_fallbacks": sum("local investigator" in engine for engine in investigation_engines), "engines": investigation_engines, "failures": [i["investigation"]["llm_failure"] for i in incidents.values() if i["investigation"].get("llm_failure")]}, "note": "The optional LLM is called only for incidents with detections. Without a configured provider, or if the provider fails, the evidence-grounded local investigator is used."})

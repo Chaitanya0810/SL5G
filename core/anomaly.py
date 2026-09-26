@@ -11,6 +11,8 @@ class AnomalyModel:
         self.min_samples = min_samples
         self.rows: list[list[float]] = []
         self.model: IsolationForest | None = None
+        self.last_fit_count = 0
+        self.refit_interval = 50
 
     @staticmethod
     def features(event: dict[str, Any]) -> list[float]:
@@ -36,9 +38,10 @@ class AnomalyModel:
     def score(self, event: dict[str, Any]) -> dict[str, Any] | None:
         if len(self.rows) < self.min_samples:
             return None
-        if self.model is None or len(self.rows) % 10 == 0:
+        if self.model is None or len(self.rows) - self.last_fit_count >= self.refit_interval:
             self.model = IsolationForest(n_estimators=100, contamination="auto", random_state=42)
             self.model.fit(self.rows[-500:])
+            self.last_fit_count = len(self.rows)
         vector = [self.features(event)]
         raw = float(self.model.decision_function(vector)[0])
         # Isolation Forest's decision boundary is zero; map negative margins to [0, 1].
@@ -49,4 +52,3 @@ class AnomalyModel:
         self.rows.append(self.features(event))
         if len(self.rows) > 1000:
             self.rows = self.rows[-1000:]
-

@@ -20,7 +20,7 @@ CyberSentinel turns **synthetic or otherwise authorized** identity, endpoint, ne
 
 Without configuration, the investigator uses a local evidence-grounded fallback that cites only events in the incident and reports insufficient evidence for an isolated signal. To use an OpenAI-compatible Chat Completions endpoint, set `OPENAI_API_KEY`; optionally set `OPENAI_BASE_URL` and `OPENAI_MODEL`. When enabled, event details are sent to that configured provider. The response is checked so its cited event IDs must belong to the incident. If the provider is unavailable or returns invalid output, the local investigator is used.
 
-For local Ollama, install a model (the included Windows launcher uses `qwen2.5:3b`) and run `powershell -ExecutionPolicy Bypass -File .\run-local.ps1`. The launcher creates an ignored `.venv`, installs the project requirements when needed, and serves CyberSentinel at `http://127.0.0.1:8000`. Ollama must be running on the same computer. This setting is for local runs; a Render container cannot access Ollama on a developer's PC.
+For local Ollama, install a model (the included Windows launcher defaults to the faster `qwen2.5:1.5b`) and run `powershell -ExecutionPolicy Bypass -File .\run-local.ps1`. To use the larger `qwen2.5:3b`, set `$env:OLLAMA_MODEL = "qwen2.5:3b"` before running the launcher. The launcher creates an ignored `.venv`, installs the project requirements when needed, and serves CyberSentinel at `http://127.0.0.1:8000`. Ollama must be running on the same computer. This setting is for local runs; a Render container cannot access Ollama on a developer's PC.
 
 ## Run locally
 

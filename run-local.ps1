@@ -15,9 +15,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $env:CYBERSENTINEL_LLM_PROVIDER = "ollama"
-$env:OLLAMA_MODEL = "qwen2.5:3b"
+if ([string]::IsNullOrWhiteSpace($env:OLLAMA_MODEL)) { $env:OLLAMA_MODEL = "qwen2.5:1.5b" }
 $env:OPENAI_BASE_URL = "http://localhost:11434/v1"
 $env:OPENAI_API_KEY = "ollama-local"
 
-Write-Host "CyberSentinel is using local Ollama model qwen2.5:3b. Open http://127.0.0.1:8000"
+Write-Host "CyberSentinel is using local Ollama model $env:OLLAMA_MODEL. Open http://127.0.0.1:8000"
 & $python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
