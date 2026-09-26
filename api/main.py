@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from core.platform import DefensePlatform
@@ -22,6 +24,16 @@ class EventRequest(BaseModel):
     severity: str = "low"
     raw_log: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+    src_ip: str | None = None
+    dst_ip: str | None = None
+    account: str | None = None
+    resource: str | None = None
+    bytes_out: int | None = None
+    bytes_in: int | None = None
+    failed_attempts: int | None = None
+    unique_destination_ports: int | None = None
+    asset_type: str = "workstation"
+    asset_criticality: str | None = None
 
 
 class HuntRequest(BaseModel):
@@ -30,6 +42,9 @@ class HuntRequest(BaseModel):
     host: str | None = None
     process: str | None = None
     contains: str | None = None
+    src_ip: str | None = None
+    dst_ip: str | None = None
+    resource: str | None = None
 
 
 class SandboxActionRequest(BaseModel):
@@ -55,8 +70,8 @@ app = FastAPI(
 
 
 @app.get("/")
-async def root() -> dict[str, str]:
-    return {"service": "CyberSentinel AI", "status": "ready", "mode": "simulated defensive MVP"}
+async def root() -> HTMLResponse:
+    return HTMLResponse((Path(__file__).parent.parent / "frontend" / "index.html").read_text(encoding="utf-8"))
 
 
 @app.get("/health")
@@ -114,4 +129,9 @@ async def get_audit() -> list[dict[str, Any]]:
 
 @app.get("/api/v1/metrics")
 async def metrics() -> dict[str, Any]:
-    return {"events_ingested": len(platform.events), "incidents": len(platform.incidents), "hunts": len(platform.hunts), "audit_records": len(platform.audit), "note": "Evaluation metrics require labeled scenarios; no precision/recall claim is inferred from live demo data."}
+    return {"events_ingested": len(platform.events), "incidents": len(platform.incidents), "hunts": len(platform.hunts), "audit_records": len(platform.audit), "ml_baseline_samples": len(platform.ml.rows), "ml_model": "IsolationForest"}
+
+
+@app.get("/api/v1/evaluation")
+async def evaluation() -> dict[str, Any]:
+    return platform.evaluation_metrics()
