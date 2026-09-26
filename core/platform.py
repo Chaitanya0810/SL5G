@@ -176,6 +176,12 @@ class DefensePlatform:
                     nodes[nid] = {"id": nid, "type": kind, "label": str(value)}
             if event.get("user") not in (None, "unknown") and event.get("host") not in (None, "unknown"):
                 edges.append({"source": f"user:{event['user']}", "target": f"host:{event['host']}", "type": "LOGIN_OR_ACTIVITY"})
+            if event.get("host") not in (None, "unknown") and event.get("process"):
+                edges.append({"source": f"host:{event['host']}", "target": f"process:{event['process']}", "type": "EXECUTED_ON"})
+            if event.get("host") not in (None, "unknown") and event.get("src_ip"):
+                edges.append({"source": f"ip:{event['src_ip']}", "target": f"host:{event['host']}", "type": "SOURCE_FOR"})
+            if event.get("host") not in (None, "unknown") and event.get("dst_ip"):
+                edges.append({"source": f"host:{event['host']}", "target": f"ip:{event['dst_ip']}", "type": "DESTINATION_FOR"})
             if event.get("host") and event.get("destination_host"):
                 edges.append({"source": f"host:{event['host']}", "target": f"host:{event['destination_host']}", "type": "AUTHENTICATED_TO"})
             if event.get("src_ip") and event.get("dst_ip"):

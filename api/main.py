@@ -186,15 +186,38 @@ async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingRespon
 
         correlations = []
         incidents: dict[str, dict[str, Any]] = {}
+        entity_fields = ("user", "host", "account", "destination_user", "destination_host", "src_ip", "dst_ip", "resource")
         for index, (event, hits) in enumerate(zip(normalized, detections), start=1):
+            related_events = platform._related(event)
+            related_matches = []
+            for prior in related_events:
+                shared = [{"field": key, "value": event.get(key)} for key in entity_fields
+                          if event.get(key) and event.get(key) != "unknown"
+                          and (key != "account" or event.get("account") != event.get("user"))
+                          and event.get(key) == prior.get(key)]
+                if shared:
+                    event_label = event.get("process") or event.get("event_type") or event.get("source")
+                    prior_label = prior.get("process") or prior.get("event_type") or prior.get("source")
+                    shared_text = ", ".join(f"{item['field']} {item['value']}" for item in shared)
+                    related_matches.append({"event_id": prior["event_id"], "event_type": prior.get("event_type"), "source": prior.get("source"), "process": prior.get("process"), "shared_entities": shared, "explanation": f"{event_label} is related to earlier {prior_label} activity through shared {shared_text}."})
             incident = platform.correlate_detected(event, hits)
             if incident:
                 incidents[incident["incident_id"]] = incident
-            correlations.append({"event_id": event["event_id"], "detection_count": len(hits), "incident_id": incident["incident_id"] if incident else None})
+            if related_matches:
+                summary = " ".join(match["explanation"] for match in related_matches[:3])
+            elif hits:
+                summary = "No earlier event shared a correlating entity; this detection starts a candidate incident timeline."
+            else:
+                summary = "No earlier event shared a correlating entity, and no detection fired for this event."
+            correlations.append({"event_id": event["event_id"], "source": event["source"], "event_type": event["event_type"], "process": event.get("process"), "user": event.get("user"), "host": event.get("host"), "detection_count": len(hits), "related_events": related_matches[:10], "incident_id": incident["incident_id"] if incident else None, "summary": summary})
             if index % 50 == 0 or index == len(normalized):
                 yield message("progress", "Correlating activity", {"stage": "correlate", "completed": index, "total": len(normalized), "message": f"Linked {index:,} of {len(normalized):,} events into related timelines."})
                 await asyncio.sleep(0)
-        yield message("correlate", "Correlate events and assemble incident timelines", {"events_stored": len(normalized), "event_links": correlations, "incidents_updated": len(incidents), "incidents": [{"incident_id": i["incident_id"], "event_count": len(i["events"]), "detection_count": len(i["detections"])} for i in incidents.values()]})
+        correlation_incidents = []
+        for incident in incidents.values():
+            graph = platform._graph(incident["events"], incident["detections"])
+            correlation_incidents.append({"incident_id": incident["incident_id"], "event_count": len(incident["events"]), "detection_count": len(incident["detections"]), "events": [{"event_id": event["event_id"], "timestamp": event["timestamp"], "source": event["source"], "event_type": event["event_type"], "user": event.get("user"), "host": event.get("host"), "process": event.get("process"), "src_ip": event.get("src_ip"), "dst_ip": event.get("dst_ip")} for event in incident["events"]], "detections": [{"event_id": detection["event_id"], "rule": detection["rule"], "title": detection["title"]} for detection in incident["detections"]], "graph": graph})
+        yield message("correlate", "Correlate events and assemble incident timelines", {"events_stored": len(normalized), "event_links": correlations, "incidents_updated": len(incidents), "incidents": correlation_incidents})
 
         for index, incident in enumerate(incidents.values(), start=1):
             llm_settings = llm_configuration()
@@ -205,7 +228,7 @@ async def analyze_raw_telemetry(request: RawTelemetryRequest) -> StreamingRespon
             await asyncio.to_thread(platform.investigate_incident, incident)
         investigation_engines = [i["investigation"].get("engine", "unknown") for i in incidents.values()]
         llm_configured = llm_configuration()["configured"]
-        yield message("investigate", "Build evidence-cited investigation hypotheses", {"investigations": [{"incident_id": i["incident_id"], "status": i["investigation"]["status"], "hypothesis": i["hypothesis"], "reasoning": i["investigation"].get("reasoning"), "event_ids": i["investigation"].get("event_ids", []), "engine": i["investigation"].get("engine"), "llm_failure": i["investigation"].get("llm_failure")} for i in incidents.values()], "llm": {"configured": llm_configured, "provider": llm_configuration()["provider"], "model": llm_configuration()["model"], "incident_summaries": len(incidents), "configured_llm_results": sum(engine.startswith(("configured LLM", "local Ollama")) for engine in investigation_engines), "local_fallbacks": sum("local investigator" in engine for engine in investigation_engines), "engines": investigation_engines, "failures": [i["investigation"]["llm_failure"] for i in incidents.values() if i["investigation"].get("llm_failure")]}, "note": "The optional LLM is called only for incidents with detections. Without a configured provider, or if the provider fails, the evidence-grounded local investigator is used."})
+        yield message("investigate", "Build evidence-cited investigation hypotheses", {"investigations": [{"incident_id": i["incident_id"], "status": i["investigation"]["status"], "hypothesis": i["hypothesis"], "reasoning": i["investigation"].get("reasoning"), "confidence": i["investigation"].get("confidence"), "event_ids": i["investigation"].get("event_ids", []), "additional_information_required": i["investigation"].get("additional_information_required", []), "llm_context": i["investigation"].get("llm_context", {}), "engine": i["investigation"].get("engine"), "llm_failure": i["investigation"].get("llm_failure")} for i in incidents.values()], "llm": {"configured": llm_configured, "provider": llm_configuration()["provider"], "model": llm_configuration()["model"], "incident_summaries": len(incidents), "configured_llm_results": sum(engine.startswith(("configured LLM", "local Ollama")) for engine in investigation_engines), "local_fallbacks": sum("local investigator" in engine for engine in investigation_engines), "engines": investigation_engines, "failures": [i["investigation"]["llm_failure"] for i in incidents.values() if i["investigation"].get("llm_failure")]}, "note": "The optional LLM is called only for incidents with detections. Without a configured provider, or if the provider fails, the evidence-grounded local investigator is used."})
 
         for incident in incidents.values():
             platform.prioritize_incident(incident)
