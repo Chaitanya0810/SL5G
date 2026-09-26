@@ -11,6 +11,7 @@ CyberSentinel turns **synthetic or otherwise authorized** identity, endpoint, ne
 - Run telemetry hunts across users, hosts, processes, IPs, and cloud resources.
 - Use the built-in analyst dashboard at `/` or the API at `/docs`.
 - Use source-specific identity, endpoint, network, and cloud intake forms. All source-specific fields are preserved, normalized into a common event shape, and displayed in a source-grouped stream with severity/source/time sorting.
+- Paste raw JSON, JSON arrays, NDJSON, or key/value log lines (or upload `.json`, `.jsonl`, `.ndjson`, `.log`, and `.txt` files). The parser separates records, infers the source, extracts common entities, preserves original vendor fields, and sends each event through the same detection/correlation pipeline.
 - Simulate host isolation, account disablement, connection blocking, process termination, and credential revocation only after a named analyst approves. Every action is audited and can be rolled back.
 - Report precision, recall, and false-positive rate for a small deterministic synthetic scenario set at `/api/v1/evaluation`. These are demonstration metrics, not production performance claims.
 
@@ -39,8 +40,8 @@ The container uses Render's `PORT` environment variable when available and serve
 
 ## API workflow
 
-1. `POST /api/v1/events` with a normalized or source-shaped synthetic event. The dashboard adjusts fields for the selected telemetry source.
-2. Review `GET /api/v1/events` (filters: `source`, `severity`, `user`, `host`; sort: `timestamp`, `severity`, `source`), `GET /api/v1/incidents`, `GET /api/v1/incidents/{incident_id}`, and the generated graph/evidence.
+1. Paste raw log data in the dashboard or call `POST /api/v1/telemetry/ingest` with `{"raw_data":"..."}`. It accepts a JSON event, JSON array/wrapper, NDJSON, or plain key/value log lines, then infers event boundaries and source. `POST /api/v1/events` remains available for already structured events.
+2. Review `GET /api/v1/events` (filters: `source`, `severity`, `user`, `host`, `q`; sort: `timestamp`, `severity`, `source`), `GET /api/v1/incidents`, `GET /api/v1/incidents/{incident_id}`, and the generated graph/evidence.
 3. Search with `POST /api/v1/hunts`.
 4. Explicitly approve a simulated action with `POST /api/v1/incidents/{incident_id}/actions/approve`, including `type`, `target`, and `approved_by`.
 5. Roll it back with `POST /api/v1/incidents/{incident_id}/actions/{action_id}/rollback`.

@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from core.platform import DefensePlatform
+from core.telemetry import parse_telemetry
 
 platform = DefensePlatform()
 
@@ -35,6 +36,10 @@ class EventRequest(BaseModel):
     unique_destination_ports: int | None = None
     asset_type: str = "workstation"
     asset_criticality: str | None = None
+
+
+class RawTelemetryRequest(BaseModel):
+    raw_data: str = Field(min_length=1, max_length=2_000_000)
 
 
 class HuntRequest(BaseModel):
@@ -84,6 +89,23 @@ async def health() -> dict[str, str]:
 async def ingest_event(request: EventRequest) -> dict[str, Any]:
     event, incident = platform.ingest(request.model_dump(exclude_none=True))
     return {"event": event, "detections": [d for d in (incident or {}).get("detections", []) if d["event_id"] == event["event_id"]], "incident": incident}
+
+
+@app.post("/api/v1/telemetry/ingest")
+async def ingest_raw_telemetry(request: RawTelemetryRequest) -> dict[str, Any]:
+    """Infer event boundaries and source fields from pasted JSON, NDJSON, or log text."""
+    try:
+        records = parse_telemetry(request.raw_data)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if len(records) > 500:
+        raise HTTPException(status_code=413, detail="A batch can contain at most 500 telemetry records")
+    results = []
+    for record in records:
+        event, incident = platform.ingest(record)
+        detections = [d for d in (incident or {}).get("detections", []) if d["event_id"] == event["event_id"]]
+        results.append({"event_id": event["event_id"], "source": event["source"], "source_detection": event.get("source_detection"), "event_type": event["event_type"], "detections": detections, "incident_id": (incident or {}).get("incident_id")})
+    return {"accepted": len(results), "results": results, "incidents": list({r["incident_id"] for r in results if r["incident_id"]}), "pipeline": ["parse", "source classification", "normalization", "rule and anomaly detection", "correlation", "investigation", "risk and graph"]}
 
 
 @app.get("/api/v1/events")
