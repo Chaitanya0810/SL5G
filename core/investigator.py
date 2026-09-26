@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -37,6 +38,18 @@ def investigate(events: list[dict[str, Any]], detections: list[dict[str, Any]]) 
         candidate["engine"] = "configured LLM with event-citation validation"
         candidate["additional_information_required"] = candidate.get("additional_information_required", [])
         return candidate
-    except Exception:
+    except Exception as exc:
         result["engine"] = "evidence-grounded local investigator (LLM unavailable; fallback used)"
+        failure: dict[str, Any] = {"exception": type(exc).__name__}
+        if isinstance(exc, HTTPError):
+            failure["http_status"] = exc.code
+            try:
+                provider_error = json.loads(exc.read().decode("utf-8", errors="replace")).get("error", {})
+                if isinstance(provider_error, dict):
+                    failure["provider_code"] = provider_error.get("code") or provider_error.get("type")
+            except (ValueError, OSError):
+                pass
+            finally:
+                exc.close()
+        result["llm_failure"] = failure
         return result
