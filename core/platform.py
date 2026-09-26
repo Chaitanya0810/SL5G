@@ -89,8 +89,9 @@ class DefensePlatform:
         self.ml = AnomalyModel()
 
     def _related(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        keys = {event.get(k) for k in ("user", "host", "account", "src_ip", "dst_ip", "resource") if event.get(k) and event.get(k) != "unknown"}
-        return [prior for prior in self.events[-200:] if keys.intersection(prior.get(k) for k in ("user", "host", "account", "src_ip", "dst_ip", "resource"))]
+        entity_keys = ("user", "host", "account", "destination_user", "destination_host", "src_ip", "dst_ip", "resource")
+        keys = {event.get(k) for k in entity_keys if event.get(k) and event.get(k) != "unknown"}
+        return [prior for prior in self.events[-200:] if keys.intersection(prior.get(k) for k in entity_keys)]
 
     def ingest(self, raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
         event = normalize_event(raw)
@@ -168,13 +169,15 @@ class DefensePlatform:
         nodes: dict[str, dict[str, str]] = {}
         edges: list[dict[str, str]] = []
         for event in events:
-            entities = [(kind, event.get(key)) for kind, key in (("user", "user"), ("account", "account"), ("host", "host"), ("process", "process"), ("ip", "src_ip"), ("ip", "dst_ip"), ("resource", "resource"))]
+            entities = [(kind, event.get(key)) for kind, key in (("user", "user"), ("user", "destination_user"), ("account", "account"), ("host", "host"), ("host", "destination_host"), ("process", "process"), ("ip", "src_ip"), ("ip", "dst_ip"), ("resource", "resource"))]
             for kind, value in entities:
                 if value and value != "unknown":
                     nid = f"{kind}:{value}"
                     nodes[nid] = {"id": nid, "type": kind, "label": str(value)}
             if event.get("user") not in (None, "unknown") and event.get("host") not in (None, "unknown"):
                 edges.append({"source": f"user:{event['user']}", "target": f"host:{event['host']}", "type": "LOGIN_OR_ACTIVITY"})
+            if event.get("host") and event.get("destination_host"):
+                edges.append({"source": f"host:{event['host']}", "target": f"host:{event['destination_host']}", "type": "AUTHENTICATED_TO"})
             if event.get("src_ip") and event.get("dst_ip"):
                 edges.append({"source": f"ip:{event['src_ip']}", "target": f"ip:{event['dst_ip']}", "type": "CONNECTED_TO"})
         for d in detections:

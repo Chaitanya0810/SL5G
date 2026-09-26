@@ -12,6 +12,7 @@ CyberSentinel turns **synthetic or otherwise authorized** identity, endpoint, ne
 - Use the built-in analyst dashboard at `/` or the API at `/docs`.
 - Use source-specific identity, endpoint, network, and cloud intake forms. All source-specific fields are preserved, normalized into a common event shape, and displayed in a source-grouped stream with severity/source/time sorting.
 - Paste raw JSON, JSON arrays, NDJSON, or key/value log lines (or upload `.json`, `.jsonl`, `.ndjson`, `.log`, and `.txt` files). The parser separates records, infers the source, extracts common entities, preserves original vendor fields, and sends each event through the same detection/correlation pipeline.
+- Import the LANL Comprehensive Multi-Source Cybersecurity Events authentication source (`auth.txt` or `auth.txt.gz`) with the streaming converter below. It preserves LANL's elapsed-seconds clock and both ends of each authentication, then writes a bounded NDJSON sample for the dashboard upload flow.
 - Simulate host isolation, account disablement, connection blocking, process termination, and credential revocation only after a named analyst approves. Every action is audited and can be rolled back.
 - Report precision, recall, and false-positive rate for a small deterministic synthetic scenario set at `/api/v1/evaluation`. These are demonstration metrics, not production performance claims.
 
@@ -62,6 +63,16 @@ Example event:
 ```
 
 Send related identity, endpoint, and network observations with shared entity fields to build the incident timeline and graph. Response operations only alter local mock state; they do not contact real endpoints or networks.
+
+## LANL authentication sample
+
+LANL provides this research dataset through an access request on its [official dataset page](https://csr.lanl.gov/data/cyber1/). The project includes a 500-event real sample at `samples/lanl-auth-sample.jsonl`. To create another bounded sample from the official archive without decompressing the entire archive to disk:
+
+```powershell
+python tools/lanl_auth_to_ndjson.py C:\data\auth.txt.gz samples\lanl-auth-sample.jsonl --limit 500
+```
+
+In the deployed dashboard, select **Load LANL auth sample (500 events)** and then **Start analysis** to step through the real records. To select records in an elapsed-seconds window, add `--time-start N --time-end N`; `--sample-every N` can thin a larger range. The converter streams the compressed source and caps output at 500 rows by default. LANL's elapsed time is not an absolute date, so the app retains it as `event_time_seconds`. The authentication file is de-identified research telemetry; this integration does not claim that its events are malicious or that the rules are validated on LANL ground truth.
 
 ## Project layout
 

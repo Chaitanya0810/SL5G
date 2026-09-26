@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.platform import DefensePlatform, normalize_event
@@ -84,6 +84,12 @@ async def root() -> HTMLResponse:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "healthy", "storage": "in-memory", "response": "sandbox simulation only"}
+
+
+@app.get("/api/v1/samples/lanl-auth", response_class=PlainTextResponse)
+async def lanl_auth_sample() -> PlainTextResponse:
+    sample = Path(__file__).parent.parent / "samples" / "lanl-auth-sample.jsonl"
+    return PlainTextResponse(sample.read_text(encoding="utf-8"), media_type="application/x-ndjson")
 
 
 @app.post("/api/v1/events")

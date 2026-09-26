@@ -5,5 +5,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY api ./api
 COPY core ./core
 COPY frontend ./frontend
+COPY samples/lanl-auth-sample.jsonl ./samples/lanl-auth-sample.jsonl
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
