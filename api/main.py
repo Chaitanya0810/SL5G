@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,7 @@ platform = DefensePlatform()
 
 
 class EventRequest(BaseModel):
+    model_config = {"extra": "allow"}
     timestamp: str | None = None
     source: str = "simulated"
     user: str = "unknown"
@@ -26,11 +27,11 @@ class EventRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     src_ip: str | None = None
     dst_ip: str | None = None
+    failed_attempts: int | None = None
     account: str | None = None
     resource: str | None = None
     bytes_out: int | None = None
     bytes_in: int | None = None
-    failed_attempts: int | None = None
     unique_destination_ports: int | None = None
     asset_type: str = "workstation"
     asset_criticality: str | None = None
@@ -83,6 +84,38 @@ async def health() -> dict[str, str]:
 async def ingest_event(request: EventRequest) -> dict[str, Any]:
     event, incident = platform.ingest(request.model_dump(exclude_none=True))
     return {"event": event, "detections": [d for d in (incident or {}).get("detections", []) if d["event_id"] == event["event_id"]], "incident": incident}
+
+
+@app.get("/api/v1/events")
+async def list_events(
+    source: str | None = None,
+    severity: str | None = None,
+    user: str | None = None,
+    host: str | None = None,
+    q: str | None = None,
+    sort_by: str = Query(default="timestamp", pattern="^(timestamp|severity|source)$"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    events = platform.events
+    if source:
+        events = [e for e in events if e["source"] == source.lower()]
+    if severity:
+        events = [e for e in events if e["severity"] == severity.lower()]
+    if user:
+        events = [e for e in events if user.lower() in str(e.get("user", "")).lower()]
+    if host:
+        events = [e for e in events if host.lower() in str(e.get("host", "")).lower()]
+    if q:
+        events = [e for e in events if q.lower() in str(e).lower()]
+    if sort_by == "severity":
+        rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        events = sorted(events, key=lambda e: rank.get(e.get("severity", "low"), 1), reverse=(order == "desc"))
+    else:
+        events = sorted(events, key=lambda e: str(e.get(sort_by, "")), reverse=(order == "desc"))
+    total = len(events)
+    return {"events": events[offset:offset + limit], "total": total, "limit": limit, "offset": offset, "sort_by": sort_by, "order": order}
 
 
 @app.get("/api/v1/incidents")

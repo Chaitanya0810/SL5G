@@ -31,10 +31,20 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
         "host": raw.get("host", raw.get("hostname", raw.get("source_host", "unknown"))),
         "event_type": str(raw.get("event_type", raw.get("type", "unknown"))).lower(),
         "process": raw.get("process", raw.get("process_name", "")),
+        "parent_process": raw.get("parent_process", raw.get("parent_process_name", "")),
         "severity": str(raw.get("severity", "low")).lower(),
         "raw_log": str(raw.get("raw_log", raw.get("message", ""))),
-        "src_ip": raw.get("src_ip", raw.get("source_ip", metadata.get("src_ip", ""))),
-        "dst_ip": raw.get("dst_ip", raw.get("destination_ip", metadata.get("dst_ip", ""))),
+        "src_ip": raw.get("src_ip", raw.get("source_ip", raw.get("srcip", metadata.get("src_ip", "")))),
+        "dst_ip": raw.get("dst_ip", raw.get("destination_ip", raw.get("dstip", metadata.get("dst_ip", "")))),
+        "src_port": raw.get("src_port", raw.get("source_port", metadata.get("src_port"))),
+        "dst_port": raw.get("dst_port", raw.get("destination_port", metadata.get("dst_port"))),
+        "protocol": str(raw.get("protocol", metadata.get("protocol", ""))).upper(),
+        "bytes_out": raw.get("bytes_out", raw.get("bytes_sent", raw.get("upload_bytes", metadata.get("bytes_out", 0)))),
+        "bytes_in": raw.get("bytes_in", raw.get("bytes_received", metadata.get("bytes_in", 0))),
+        "auth_result": raw.get("auth_result", raw.get("result", metadata.get("result", ""))),
+        "action": raw.get("action", raw.get("cloud_action", metadata.get("action", ""))),
+        "file_path": raw.get("file_path", raw.get("filename", metadata.get("file_path", ""))),
+        "registry_path": raw.get("registry_path", metadata.get("registry_path", "")),
         "account": raw.get("account", raw.get("user", "unknown")),
         "resource": raw.get("resource", raw.get("cloud_resource", "")),
         "metadata": metadata,
@@ -42,7 +52,7 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def inspect_event(event: dict[str, Any]) -> list[dict[str, Any]]:
-    text = " ".join(str(event.get(k, "")) for k in ("raw_log", "process", "event_type", "severity")).lower()
+    text = " ".join(str(event.get(k, "")) for k in ("raw_log", "process", "event_type", "severity", "auth_result", "action", "file_path")).lower()
     hits: list[dict[str, Any]] = []
 
     def add(rule: str, title: str, evidence: list[str], technique: str, tactic: str, confidence: float = .78) -> None:
@@ -52,6 +62,8 @@ def inspect_event(event: dict[str, Any]) -> list[dict[str, Any]]:
         add("encoded_powershell", "Encoded PowerShell execution", [event.get("process", ""), event.get("raw_log", "")], "T1059.001", "TA0002", .9)
     if any(s in text for s in ("credential dump", "lsass", "mimikatz", "credential_access", "dump credentials")):
         add("credential_access", "Credential access behavior", [event.get("event_type", ""), event.get("raw_log", "")], "T1003", "TA0006", .88)
+    if event.get("auth_result", "").lower() in {"failure", "failed", "failed_authentication"} and int(event.get("failed_attempts", 0) or 0) >= 5:
+        add("authentication_failures", "Repeated failed authentication", [f"Failed attempts: {event.get('failed_attempts')}", event.get("src_ip", "")], "T1110", "TA0006", .82)
     if any(s in text for s in ("remote logon", "remote authentication", "lateral_movement", "psexec", "wmic /node", "remote_authentication")):
         add("remote_authentication", "Possible lateral movement", [event.get("event_type", ""), event.get("raw_log", "")], "T1021", "TA0008", .8)
     if any(s in text for s in ("exfiltration", "large_upload", "unusual outbound transfer")):
@@ -60,7 +72,7 @@ def inspect_event(event: dict[str, Any]) -> list[dict[str, Any]]:
         add("privilege_escalation", "Possible privilege escalation", [event.get("event_type", ""), event.get("raw_log", "")], "T1068", "TA0004", .72)
     if any(s in text for s in ("account created", "account_creation", "new user")):
         add("account_creation", "Account created", [event.get("event_type", ""), event.get("raw_log", "")], "T1136", "TA0003", .72)
-    if any(s in text for s in ("access key created", "access_key_creation", "iam policy", "iam change", "permission change")):
+    if any(s in text for s in ("access key created", "access_key_creation", "createaccesskey", "iam policy", "iam change", "permission change")):
         add("cloud_permission_change", "Cloud identity or permission change", [event.get("event_type", ""), event.get("raw_log", "")], "T1098", "TA0003", .7)
     return hits
 
